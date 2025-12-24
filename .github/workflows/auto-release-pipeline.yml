@@ -13,6 +13,13 @@ permissions:
 jobs:
   release-pipeline:
     runs-on: ubuntu-latest
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CONTAINERAPPS_NAME: ${{ vars.AZURE_CONTAINERAPPS_NAME }}
+      AZURE_CONTAINERAPPS_RESOURCE_GROUP: ${{ vars.AZURE_CONTAINERAPPS_RESOURCE_GROUP }}
+      AZURE_CONTAINERAPPS_CONTAINER_NAME: ${{ vars.AZURE_CONTAINERAPPS_CONTAINER_NAME }}
     # 跳过由GitHub Actions创建的提交，避免死循环
     if: github.event.pusher.name != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip ci]')
     steps:
@@ -454,6 +461,45 @@ jobs:
           org.opencontainers.image.source=https://github.com/${{ github.repository }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+    - name: Azure login (OIDC)
+      if: steps.check.outputs.needs_bump == 'true' && env.AZURE_SUBSCRIPTION_ID != '' && env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_CONTAINERAPPS_NAME != '' && env.AZURE_CONTAINERAPPS_RESOURCE_GROUP != ''
+      uses: azure/login@v2
+      with:
+        client-id: ${{ env.AZURE_CLIENT_ID }}
+        tenant-id: ${{ env.AZURE_TENANT_ID }}
+        subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Deploy to Azure Container Apps
+      if: steps.check.outputs.needs_bump == 'true' && env.AZURE_SUBSCRIPTION_ID != '' && env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_CONTAINERAPPS_NAME != '' && env.AZURE_CONTAINERAPPS_RESOURCE_GROUP != ''
+      uses: azure/cli@v2
+      with:
+        inlineScript: |
+          set -euo pipefail
+          IMAGE="${{ steps.image_names.outputs.docker_image }}:${{ steps.next_version.outputs.new_tag }}"
+          az extension add --name containerapp --upgrade
+
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            az containerapp registry set \
+              --name "$AZURE_CONTAINERAPPS_NAME" \
+              --resource-group "$AZURE_CONTAINERAPPS_RESOURCE_GROUP" \
+              --server docker.io \
+              --username "${{ secrets.DOCKERHUB_USERNAME }}" \
+              --password "${{ secrets.DOCKERHUB_TOKEN }}"
+          fi
+
+          if [ -n "$AZURE_CONTAINERAPPS_CONTAINER_NAME" ]; then
+            az containerapp update \
+              --name "$AZURE_CONTAINERAPPS_NAME" \
+              --resource-group "$AZURE_CONTAINERAPPS_RESOURCE_GROUP" \
+              --container-name "$AZURE_CONTAINERAPPS_CONTAINER_NAME" \
+              --image "$IMAGE"
+          else
+            az containerapp update \
+              --name "$AZURE_CONTAINERAPPS_NAME" \
+              --resource-group "$AZURE_CONTAINERAPPS_RESOURCE_GROUP" \
+              --image "$IMAGE"
+          fi
 
     - name: Send Telegram Notification
       if: steps.check.outputs.needs_bump == 'true' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
